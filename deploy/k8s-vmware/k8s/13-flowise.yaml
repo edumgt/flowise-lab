@@ -1,0 +1,122 @@
+# ============================================================
+# 13-flowise.yaml  –  Flowise AI 워크플로 엔진
+# 접근: http://flowise.bankrag.local
+# 자격증명: admin / admin1234
+# ============================================================
+apiVersion: v1
+kind: Secret
+metadata:
+  name: flowise-secret
+  namespace: bankrag
+  annotations:
+    # ⚠ SECURITY: 배포 전 반드시 아래 자격증명을 변경하세요.
+    # kubectl create secret generic flowise-secret \
+    #   --from-literal=username=admin \
+    #   --from-literal=password=<strong-password> \
+    #   -n bankrag
+type: Opaque
+stringData:
+  username: admin
+  # ⚠ CHANGE FOR PRODUCTION – well-known default, unauthorized access risk
+  password: admin1234
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: flowise-data
+  namespace: bankrag
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 5Gi
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flowise
+  namespace: bankrag
+  labels:
+    app: flowise
+    app.kubernetes.io/part-of: bankrag
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: flowise
+  template:
+    metadata:
+      labels:
+        app: flowise
+    spec:
+      containers:
+        - name: flowise
+          # 폐쇄망 모드: registry.local:5000/flowiseai/flowise:2.1.4
+          image: flowiseai/flowise:2.1.4
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3000
+          env:
+            - name: PORT
+              value: "3000"
+            - name: FLOWISE_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: flowise-secret
+                  key: username
+            - name: FLOWISE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: flowise-secret
+                  key: password
+            - name: DATABASE_PATH
+              value: /root/.flowise
+            - name: APIKEY_PATH
+              value: /root/.flowise
+            - name: SECRETKEY_PATH
+              value: /root/.flowise
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          volumeMounts:
+            - name: data
+              mountPath: /root/.flowise
+          readinessProbe:
+            httpGet:
+              path: /api/v1/ping
+              port: 3000
+            initialDelaySeconds: 20
+            periodSeconds: 15
+          livenessProbe:
+            httpGet:
+              path: /api/v1/ping
+              port: 3000
+            initialDelaySeconds: 60
+            periodSeconds: 30
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: flowise-data
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: flowise
+  namespace: bankrag
+  labels:
+    app: flowise
+spec:
+  selector:
+    app: flowise
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000

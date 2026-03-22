@@ -1,0 +1,135 @@
+# ============================================================
+# 19-ingress.yaml  –  NGINX Ingress + MetalLB LoadBalancer
+# ============================================================
+#
+# [동작 원리]
+#   1. MetalLB가 ingress-nginx Service(LoadBalancer)에 외부 IP 할당
+#      (01-metallb-config.yaml 의 IP 풀에서 선택)
+#   2. NGINX Ingress Controller가 Host 헤더를 보고 각 서비스로 라우팅
+#   3. /etc/hosts에 아래 호스트명 → MetalLB IP 를 등록하면 브라우저에서 접근 가능
+#
+# [hosts 파일 등록 예시]  (/etc/hosts 또는 C:\Windows\System32\drivers\etc\hosts)
+#   <MetalLB-IP>  api-gateway.bankrag.local
+#   <MetalLB-IP>  flowise.bankrag.local
+#   <MetalLB-IP>  qdrant.bankrag.local
+#   <MetalLB-IP>  jaeger.bankrag.local
+#   <MetalLB-IP>  prometheus.bankrag.local
+#   <MetalLB-IP>  grafana.bankrag.local
+#   <MetalLB-IP>  minio.bankrag.local
+#
+# setup-vmware-k8s.sh 가 MetalLB IP를 감지하여 자동으로 위 항목을 등록합니다.
+# ============================================================
+
+# IngressClass – NGINX 를 기본 Ingress로 지정
+apiVersion: networking.k8s.io/v1
+kind: IngressClass
+metadata:
+  name: nginx
+  annotations:
+    ingressclass.kubernetes.io/is-default-class: "true"
+spec:
+  controller: k8s.io/ingress-nginx
+
+---
+# 모든 서비스를 하나의 Ingress 리소스로 관리 (호스트 기반 라우팅)
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: bankrag-ingress
+  namespace: bankrag
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+    # WebSocket 지원 (Flowise, api-gateway)
+    nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection "upgrade";
+spec:
+  ingressClassName: nginx
+  rules:
+    # FE + API Gateway  →  :3005
+    - host: api-gateway.bankrag.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-gateway
+                port:
+                  number: 3005
+
+    # Flowise  →  :3000
+    - host: flowise.bankrag.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: flowise
+                port:
+                  number: 3000
+
+    # Qdrant Dashboard  →  :6333
+    - host: qdrant.bankrag.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: qdrant
+                port:
+                  number: 6333
+
+    # Jaeger UI  →  :16686
+    - host: jaeger.bankrag.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: jaeger
+                port:
+                  number: 16686
+
+    # Prometheus  →  :9090
+    - host: prometheus.bankrag.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: prometheus
+                port:
+                  number: 9090
+
+    # Grafana  →  :3000 (내부 포트, 브라우저에서는 grafana.bankrag.local:80)
+    - host: grafana.bankrag.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: grafana
+                port:
+                  number: 3000
+
+    # MinIO 콘솔  →  :9001
+    - host: minio.bankrag.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: minio
+                port:
+                  number: 9001

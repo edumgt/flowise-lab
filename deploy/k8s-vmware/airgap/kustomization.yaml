@@ -1,0 +1,113 @@
+# ============================================================
+# airgap/kustomization.yaml
+# ============================================================
+# [폐쇄망 배포용 Kustomize Overlay]
+#
+# 역할:
+#   - ../k8s/ 의 기본 매니페스트를 그대로 사용하면서
+#     모든 이미지 참조를 내부 레지스트리(registry.local:5000)로 교체합니다.
+#   - 인터넷 접근이 없는 폐쇄망에서 imagePullPolicy: IfNotPresent 를 보장합니다.
+#
+# 배포 명령:
+#   kubectl apply -k deploy/k8s-vmware/airgap/
+#
+# 사전 조건:
+#   - 02-import-and-push.sh 로 모든 이미지가 registry.local:5000 에 push 됨
+#   - 03-install-k3s-airgap.sh 로 k3s, MetalLB, Ingress 설치 완료
+# ============================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# 기본 매니페스트 경로 (온라인 모드와 동일한 YAML 사용)
+resources:
+  - ../k8s/00-namespace.yaml
+  - ../k8s/01-metallb-config.yaml
+  - ../k8s/10-qdrant.yaml
+  - ../k8s/11-redis.yaml
+  - ../k8s/12-minio.yaml
+  - ../k8s/13-flowise.yaml
+  - ../k8s/14-api-gateway.yaml
+  - ../k8s/15-jaeger.yaml
+  - ../k8s/16-otel-collector.yaml
+  - ../k8s/17-prometheus.yaml
+  - ../k8s/18-grafana.yaml
+  - ../k8s/19-ingress.yaml
+  # 로컬 레지스트리 자체 배포 (폐쇄망 전용)
+  - k8s/00-local-registry.yaml
+
+# ── 이미지 교체 (공개 레지스트리 → 내부 레지스트리) ──────
+# kustomize 가 Deployment/Job spec.containers[].image 를 자동 치환합니다.
+images:
+  # ── 인프라 서비스 ──────────────────────────────────────
+  - name: qdrant/qdrant
+    newName: registry.local:5000/qdrant/qdrant
+    newTag: v1.9.5
+
+  - name: redis
+    newName: registry.local:5000/redis
+    newTag: 7.2-alpine
+
+  - name: minio/minio
+    newName: registry.local:5000/minio/minio
+    newTag: RELEASE.2024-06-04T19-20-08Z
+
+  - name: minio/mc
+    newName: registry.local:5000/minio/mc
+    newTag: RELEASE.2024-06-03T15-58-26Z
+
+  - name: flowiseai/flowise
+    newName: registry.local:5000/flowiseai/flowise
+    newTag: "2.1.4"
+
+  # ── 관측 스택 ──────────────────────────────────────────
+  - name: jaegertracing/all-in-one
+    newName: registry.local:5000/jaegertracing/all-in-one
+    newTag: "1.57"
+
+  - name: otel/opentelemetry-collector-contrib
+    newName: registry.local:5000/otel/opentelemetry-collector-contrib
+    newTag: 0.105.0
+
+  - name: prom/prometheus
+    newName: registry.local:5000/prom/prometheus
+    newTag: v2.53.1
+
+  - name: grafana/grafana
+    newName: registry.local:5000/grafana/grafana
+    newTag: "11.1.0"
+
+  # ── 커스텀 빌드 이미지 ─────────────────────────────────
+  # setup-vmware-k8s.sh 가 빌드 후 registry.local:5000 에 push 합니다.
+  - name: registry.local:5000/api-gateway
+    newName: registry.local:5000/api-gateway
+    newTag: latest
+
+  - name: registry.local:5000/indexing-worker
+    newName: registry.local:5000/indexing-worker
+    newTag: latest
+
+  - name: registry.local:5000/langchain-js
+    newName: registry.local:5000/langchain-js
+    newTag: latest
+
+  - name: registry.local:5000/llamaindex-py
+    newName: registry.local:5000/llamaindex-py
+    newTag: latest
+
+# ── 모든 Deployment 에 imagePullPolicy: IfNotPresent 강제 ─
+# (이미지를 외부에서 pull 시도하지 않도록)
+patches:
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: not-used
+      spec:
+        template:
+          spec:
+            containers:
+              - name: not-used
+                imagePullPolicy: IfNotPresent
+    target:
+      kind: Deployment
+      labelSelector: "app.kubernetes.io/part-of=bankrag"

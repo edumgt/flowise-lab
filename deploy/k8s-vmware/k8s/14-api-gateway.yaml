@@ -1,0 +1,358 @@
+# ============================================================
+# 14-api-gateway.yaml  –  FE + API Gateway
+# 접근: http://api-gateway.bankrag.local
+# ============================================================
+# 참고: api-gateway, indexing-worker, langchain-js, llamaindex-py 는
+#       로컬 소스를 빌드한 이미지를 사용합니다.
+#       setup-vmware-k8s.sh 가 이미지를 빌드하고 레지스트리에 push합니다.
+#       이미지명 패턴: registry.local:5000/<service>:latest
+# ============================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-gateway-env
+  namespace: bankrag
+data:
+  ENV: "production"
+  CORS_ORIGIN: "http://api-gateway.bankrag.local"
+  QDRANT_URL: "http://qdrant:6333"
+  REDIS_URL: "redis://redis:6379"
+  S3_ENABLED: "true"
+  S3_ENDPOINT: "http://minio:9000"
+  S3_BUCKET: "bankrag-docs"
+  S3_REGION: "ap-northeast-2"
+  S3_FORCE_PATH_STYLE: "true"
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4318"
+  SERVICE_NAMESPACE: "bankrag"
+  LANGCHAIN_URL: "http://langchain-js:3001"
+  LLAINDEX_URL: "http://llamaindex-py:8000"
+  FLOWISE_URL: "http://flowise:3000"
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: api-gateway-secret
+  namespace: bankrag
+  annotations:
+    # ⚠ SECURITY: 배포 전 반드시 아래 값을 변경하세요.
+    # setup-vmware-k8s.sh 는 openssl rand -hex 32 로 JWT_SECRET 을 자동 생성합니다.
+    # 수동 생성: kubectl create secret generic api-gateway-secret \
+    #   --from-literal=JWT_SECRET=$(openssl rand -hex 32) \
+    #   --from-literal=S3_ACCESS_KEY=<your-key> \
+    #   --from-literal=S3_SECRET_KEY=<your-secret> \
+    #   -n bankrag
+type: Opaque
+stringData:
+  # ⚠ CHANGE BEFORE DEPLOYMENT – empty value will cause startup failure
+  JWT_SECRET: ""
+  S3_ACCESS_KEY: "minio"
+  S3_SECRET_KEY: "minio1234"
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: api-gateway-uploads
+  namespace: bankrag
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 5Gi
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-gateway
+  namespace: bankrag
+  labels:
+    app: api-gateway
+    app.kubernetes.io/part-of: bankrag
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: api-gateway
+  template:
+    metadata:
+      labels:
+        app: api-gateway
+    spec:
+      containers:
+        - name: api-gateway
+          # 로컬 빌드 이미지 – setup-vmware-k8s.sh 가 자동으로 주입합니다.
+          # 폐쇄망 모드에서도 동일한 경로 사용:
+          #   registry.local:5000/api-gateway:latest
+          image: registry.local:5000/api-gateway:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3005
+          envFrom:
+            - configMapRef:
+                name: api-gateway-env
+          env:
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: api-gateway-secret
+                  key: JWT_SECRET
+            - name: S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: api-gateway-secret
+                  key: S3_ACCESS_KEY
+            - name: S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: api-gateway-secret
+                  key: S3_SECRET_KEY
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "300m"
+              memory: "256Mi"
+          volumeMounts:
+            - name: uploads
+              mountPath: /app/data/uploads
+            - name: config
+              mountPath: /app/config
+              readOnly: true
+      volumes:
+        - name: uploads
+          persistentVolumeClaim:
+            claimName: api-gateway-uploads
+        - name: config
+          configMap:
+            name: bankrag-config
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-gateway
+  namespace: bankrag
+  labels:
+    app: api-gateway
+spec:
+  selector:
+    app: api-gateway
+  ports:
+    - name: http
+      port: 3005
+      targetPort: 3005
+
+---
+# ============================================================
+# indexing-worker  (별도 Service 없음 – 내부 큐 워커)
+# ============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: indexing-worker
+  namespace: bankrag
+  labels:
+    app: indexing-worker
+    app.kubernetes.io/part-of: bankrag
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: indexing-worker
+  template:
+    metadata:
+      labels:
+        app: indexing-worker
+    spec:
+      containers:
+        - name: indexing-worker
+          image: registry.local:5000/indexing-worker:latest
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: api-gateway-env
+          env:
+            - name: S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: api-gateway-secret
+                  key: S3_ACCESS_KEY
+            - name: S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: api-gateway-secret
+                  key: S3_SECRET_KEY
+            - name: UPLOAD_DIR
+              value: /app/data/uploads
+            - name: JOBS_DIR
+              value: /app/data/jobs
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "300m"
+              memory: "256Mi"
+          volumeMounts:
+            - name: uploads
+              mountPath: /app/data/uploads
+            - name: config
+              mountPath: /app/config
+              readOnly: true
+      volumes:
+        - name: uploads
+          persistentVolumeClaim:
+            claimName: api-gateway-uploads
+        - name: config
+          configMap:
+            name: bankrag-config
+
+---
+# ============================================================
+# langchain-js
+# ============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: langchain-js
+  namespace: bankrag
+  labels:
+    app: langchain-js
+    app.kubernetes.io/part-of: bankrag
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: langchain-js
+  template:
+    metadata:
+      labels:
+        app: langchain-js
+    spec:
+      containers:
+        - name: langchain-js
+          image: registry.local:5000/langchain-js:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3001
+          env:
+            - name: ENV
+              value: "production"
+            - name: QDRANT_URL
+              value: "http://qdrant:6333"
+            - name: LLM_PROVIDER
+              value: "ollama"
+            - name: OLLAMA_BASE_URL
+              value: "http://ollama:11434"
+            - name: OLLAMA_LLM_MODEL
+              value: "llama3.1:8b"
+            - name: OLLAMA_EMBED_MODEL
+              value: "nomic-embed-text"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector:4318"
+            - name: SERVICE_NAMESPACE
+              value: "bankrag"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "300m"
+              memory: "256Mi"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: langchain-js
+  namespace: bankrag
+spec:
+  selector:
+    app: langchain-js
+  ports:
+    - port: 3001
+      targetPort: 3001
+
+---
+# ============================================================
+# llamaindex-py
+# ============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llamaindex-py
+  namespace: bankrag
+  labels:
+    app: llamaindex-py
+    app.kubernetes.io/part-of: bankrag
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: llamaindex-py
+  template:
+    metadata:
+      labels:
+        app: llamaindex-py
+    spec:
+      containers:
+        - name: llamaindex-py
+          image: registry.local:5000/llamaindex-py:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          env:
+            - name: ENV
+              value: "production"
+            - name: QDRANT_URL
+              value: "http://qdrant:6333"
+            - name: LLM_PROVIDER
+              value: "ollama"
+            - name: OLLAMA_BASE_URL
+              value: "http://ollama:11434"
+            - name: OLLAMA_LLM_MODEL
+              value: "llama3.1:8b"
+            - name: OLLAMA_EMBED_MODEL
+              value: "nomic-embed-text"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector:4318"
+            - name: SERVICE_NAMESPACE
+              value: "bankrag"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "300m"
+              memory: "256Mi"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: llamaindex-py
+  namespace: bankrag
+spec:
+  selector:
+    app: llamaindex-py
+  ports:
+    - port: 8000
+      targetPort: 8000
+
+---
+# config/tenants.yaml, config/users.json → ConfigMap 으로 마운트
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bankrag-config
+  namespace: bankrag
+binaryData: {}
+# setup-vmware-k8s.sh 가 실행 시 아래 data 필드를 실제 파일 내용으로 채웁니다.
+# kubectl create configmap bankrag-config \
+#   --from-file=tenants.yaml=config/tenants.yaml \
+#   --from-file=users.json=config/users.json \
+#   -n bankrag --dry-run=client -o yaml | kubectl apply -f -
