@@ -1,0 +1,95 @@
+#cloud-config
+# ============================================================
+# Ubuntu 22.04 Server 자동 설치 (Subiquity autoinstall)
+# ============================================================
+# 이 파일은 Ubuntu Server ISO 부팅 시 자동 설치에 사용됩니다.
+# CIDATA 레이블 ISO(seed ISO)에 meta-data 와 함께 패키징해야 합니다.
+#
+# seed ISO 생성 방법 (Linux / WSL):
+#   genisoimage -output seed.iso -volid cidata -joliet -rock user-data meta-data
+#
+# VMware VM에 두 개의 CD-ROM 마운트:
+#   CD-ROM 1: ubuntu-22.04.x-live-server-amd64.iso  (설치 미디어)
+#   CD-ROM 2: seed.iso                               (자동설치 설정)
+# ============================================================
+
+autoinstall:
+  version: 1
+
+  # 로케일 / 키보드
+  locale: en_US.UTF-8
+  keyboard:
+    layout: us
+
+  # 네트워크 – VMware NAT(ens33)에서 DHCP로 IP 자동 취득
+  network:
+    network:
+      version: 2
+      ethernets:
+        ens33:
+          dhcp4: true
+          dhcp6: false
+
+  # 디스크 – LVM 레이아웃 (기본 60 GB)
+  storage:
+    layout:
+      name: lvm
+      match:
+        size: largest
+
+  # 사용자 계정
+  # password 해시 생성 방법: openssl passwd -6 'ubuntu1234'
+  identity:
+    hostname: bankrag-k8s
+    username: ubuntu
+    # 아래 해시는 'ubuntu1234' 의 SHA-512 crypt 해시입니다.
+    # 보안 환경에서는 반드시 새 해시로 교체하세요.
+    password: "$6$rounds=4096$bankragsalt00001$W5EJxR2K3v4eFl7pQTZzC2NqDNXp2RfxBqnk0BOkJgfFKmFrmFKRy71i9GOq7pJqBHqIe4BmRTkc6rqoHfvVH0"
+
+  # SSH 서버 설치 및 비밀번호 로그인 허용
+  ssh:
+    install-server: true
+    allow-pw: true
+    authorized-keys: []
+
+  # 기본 패키지 목록
+  packages:
+    - curl
+    - wget
+    - git
+    - apt-transport-https
+    - ca-certificates
+    - gnupg
+    - lsb-release
+    - net-tools
+    - htop
+    - jq
+    - socat
+    - conntrack
+    - ipset
+
+  # 설치 완료 후 실행 명령
+  late-commands:
+    # ubuntu 계정에 NOPASSWD sudo 부여
+    - echo 'ubuntu ALL=(ALL) NOPASSWD:ALL' > /target/etc/sudoers.d/ubuntu
+    - chmod 0440 /target/etc/sudoers.d/ubuntu
+    # 타임존 Asia/Seoul 설정
+    - curtin in-target --target=/target -- timedatectl set-timezone Asia/Seoul
+    # swap 비활성화 (k8s 요구사항)
+    - curtin in-target --target=/target -- swapoff -a
+    - sed -i '/swap/d' /target/etc/fstab
+    # 브릿지 네트워크 커널 모듈 활성화 (k8s 요구사항)
+    - |
+      cat >> /target/etc/modules-load.d/k8s.conf <<'EOF'
+      overlay
+      br_netfilter
+      EOF
+    - |
+      cat >> /target/etc/sysctl.d/99-k8s.conf <<'EOF'
+      net.bridge.bridge-nf-call-iptables  = 1
+      net.bridge.bridge-nf-call-ip6tables = 1
+      net.ipv4.ip_forward                 = 1
+      EOF
+
+  # 설치 완료 후 자동 재부팅
+  shutdown: reboot

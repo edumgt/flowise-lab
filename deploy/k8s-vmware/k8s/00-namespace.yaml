@@ -1,0 +1,11 @@
+# ============================================================
+# 00-namespace.yaml
+# bankrag 전용 네임스페이스 생성
+# ============================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: bankrag
+  labels:
+    app.kubernetes.io/part-of: bankrag
+    environment: production

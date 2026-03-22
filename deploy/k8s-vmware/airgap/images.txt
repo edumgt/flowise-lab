@@ -1,0 +1,39 @@
+# ============================================================
+# images.txt  –  AI-Flowise-RAG 스택 전체 이미지 목록
+# ============================================================
+# 형식: <registry>/<image>:<tag>
+# 이 목록은 폐쇄망 배포 시 사전에 pull → export → import 해야 하는
+# 모든 컨테이너 이미지입니다.
+#
+# 커스텀 빌드 이미지(api-gateway, indexing-worker, langchain-js, llamaindex-py)는
+# 별도로 빌드 후 추가하세요.
+# ============================================================
+
+# ── 인프라 서비스 ──────────────────────────────────────────
+qdrant/qdrant:v1.9.5
+redis:7.2-alpine
+minio/minio:RELEASE.2024-06-04T19-20-08Z
+minio/mc:RELEASE.2024-06-03T15-58-26Z
+flowiseai/flowise:2.1.4
+
+# ── 관측 스택 ──────────────────────────────────────────────
+jaegertracing/all-in-one:1.57
+otel/opentelemetry-collector-contrib:0.105.0
+prom/prometheus:v2.53.1
+grafana/grafana:11.1.0
+
+# ── MetalLB ────────────────────────────────────────────────
+quay.io/metallb/controller:v0.14.8
+quay.io/metallb/speaker:v0.14.8
+
+# ── NGINX Ingress Controller ───────────────────────────────
+registry.k8s.io/ingress-nginx/controller:v1.11.2
+registry.k8s.io/ingress-nginx/kube-webhook-certgen:v1.4.3
+
+# ── 로컬 레지스트리 (폐쇄망 내부 이미지 저장소) ──────────
+registry:2.8.3
+
+# ── k3s (별도 바이너리 – airgap 번들로 제공) ──────────────
+# k3s air-gap images: https://github.com/k3s-io/k3s/releases
+# 파일명: k3s-airgap-images-amd64.tar.zst  (k3s v1.30.3+k3s1 기준)
+# k3s 바이너리: https://github.com/k3s-io/k3s/releases/download/v1.30.3+k3s1/k3s

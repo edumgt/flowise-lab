@@ -1,0 +1,93 @@
+# ============================================================
+# 10-qdrant.yaml  –  Qdrant 벡터 데이터베이스
+# 접근: http://qdrant.bankrag.local  (dashboard: /dashboard)
+# ============================================================
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: qdrant-data
+  namespace: bankrag
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path   # k3s 기본 스토리지 클래스
+  resources:
+    requests:
+      storage: 5Gi
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qdrant
+  namespace: bankrag
+  labels:
+    app: qdrant
+    app.kubernetes.io/part-of: bankrag
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: qdrant
+  template:
+    metadata:
+      labels:
+        app: qdrant
+    spec:
+      containers:
+        - name: qdrant
+          # 폐쇄망 모드: registry.local:5000/qdrant/qdrant:v1.9.5
+          image: qdrant/qdrant:v1.9.5
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 6333
+            - name: grpc
+              containerPort: 6334
+          env:
+            - name: QDRANT__SERVICE__GRPC_PORT
+              value: "6334"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          volumeMounts:
+            - name: data
+              mountPath: /qdrant/storage
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 6333
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 6333
+            initialDelaySeconds: 30
+            periodSeconds: 20
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: qdrant-data
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qdrant
+  namespace: bankrag
+  labels:
+    app: qdrant
+spec:
+  selector:
+    app: qdrant
+  ports:
+    - name: http
+      port: 6333
+      targetPort: 6333
+    - name: grpc
+      port: 6334
+      targetPort: 6334
